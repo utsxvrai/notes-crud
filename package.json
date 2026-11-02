@@ -1,0 +1,29 @@
+{
+  "name": "notes-crud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Simple notes CRUD API. Postgres (Amazon RDS) for data, Amazon S3 for attachments.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "npm run build && node --env-file=.env dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1161.0",
+    "@aws-sdk/s3-request-presigner": "3.1161.0",
+    "fastify": "5.12.7",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/pg": "8.23.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

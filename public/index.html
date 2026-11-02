@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <style>
+    :root { --bg: #f7f7f5; --card: #fff; --fg: #1c1c1c; --muted: #6b6b6b; --line: #e4e4e0; --accent: #0f766e; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111; --card: #1a1a1a; --fg: #eee; --muted: #9a9a9a; --line: #2a2a2a; --accent: #2dd4bf; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px; display: grid; gap: 16px; }
+    h1 { margin: 0; font-size: 24px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    form, .note { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 10px; }
+    input, textarea { width: 100%; font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+    textarea { min-height: 70px; resize: vertical; }
+    button { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+    button.ghost { background: transparent; color: var(--accent); }
+    #list { display: grid; gap: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .note h2 { margin: 0; font-size: 17px; }
+    .note p { margin: 0; white-space: pre-wrap; }
+    .error { color: #dc2626; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>Notes</h1>
+    <p class="muted">Data in Postgres (Amazon RDS) · attachments in Amazon S3</p>
+  </div>
+
+  <form id="create">
+    <input name="title" placeholder="Title" maxlength="200" required>
+    <textarea name="body" placeholder="Write something…"></textarea>
+    <div class="row"><button type="submit">Add note</button><span id="status" class="muted"></span></div>
+  </form>
+
+  <section id="list"></section>
+</main>
+
+<template id="note-tpl">
+  <article class="note">
+    <h2></h2>
+    <p></p>
+    <div class="row attachment"></div>
+    <div class="row">
+      <button type="button" class="ghost edit">Edit</button>
+      <input type="file" class="file" hidden>
+      <button type="button" class="ghost attach">Attach file</button>
+      <button type="button" class="ghost delete">Delete</button>
+      <span class="muted when"></span>
+    </div>
+  </article>
+</template>
+
+<script>
+  const api = async (path, options = {}) => {
+    const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.statusText);
+    return res.status === 204 ? null : res.json();
+  };
+  const status = (text, isError = false) => {
+    const el = document.getElementById("status");
+    el.textContent = text;
+    el.className = isError ? "error" : "muted";
+  };
+
+  async function render() {
+    const list = document.getElementById("list");
+    const notes = await api("/api/notes");
+    list.replaceChildren();
+    if (notes.length === 0) list.innerHTML = '<p class="muted">No notes yet.</p>';
+    for (const summary of notes) {
+      // The list has no presigned URLs; fetch the single note when it has an attachment.
+      const note = summary.attachmentKey ? await api(`/api/notes/${summary.id}`) : summary;
+      const el = document.getElementById("note-tpl").content.cloneNode(true);
+      el.querySelector("h2").textContent = note.title;
+      el.querySelector("p").textContent = note.body;
+      el.querySelector(".when").textContent = new Date(note.updatedAt).toLocaleString();
+      if (note.attachmentUrl) {
+        const link = document.createElement("a");
+        link.href = note.attachmentUrl;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = "📎 " + note.attachmentKey.split("/").pop().replace(/^[0-9a-f-]{37}/, "");
+        el.querySelector(".attachment").append(link);
+      }
+      el.querySelector(".edit").onclick = async () => {
+        const title = prompt("Title", note.title);
+        if (title === null) return;
+        const body = prompt("Body", note.body);
+        if (body === null) return;
+        await api(`/api/notes/${note.id}`, { method: "PATCH", body: JSON.stringify({ title, body }) }).catch((e) => status(e.message, true));
+        render();
+      };
+      el.querySelector(".delete").onclick = async () => {
+        await api(`/api/notes/${note.id}`, { method: "DELETE" }).catch((e) => status(e.message, true));
+        render();
+      };
+      const file = el.querySelector(".file");
+      el.querySelector(".attach").onclick = () => file.click();
+      file.onchange = async () => {
+        const f = file.files[0];
+        if (!f) return;
+        try {
+          status("Uploading to S3…");
+          const contentType = f.type || "application/octet-stream";
+          const { uploadUrl } = await api(`/api/notes/${note.id}/attachment`, { method: "POST", body: JSON.stringify({ fileName: f.name, contentType }) });
+          const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: f });
+          if (!put.ok) throw new Error(`S3 upload failed (${put.status}). Check the bucket's CORS settings.`);
+          status("Uploaded");
+        } catch (e) { status(e.message, true); }
+        render();
+      };
+      list.append(el);
+    }
+  }
+
+  document.getElementById("create").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    try {
+      await api("/api/notes", { method: "POST", body: JSON.stringify({ title: form.get("title"), body: form.get("body") ?? "" }) });
+      event.target.reset();
+      status("Saved");
+      render();
+    } catch (e) { status(e.message, true); }
+  };
+
+  render().catch((e) => status(e.message, true));
+</script>
+</body>
+</html>
